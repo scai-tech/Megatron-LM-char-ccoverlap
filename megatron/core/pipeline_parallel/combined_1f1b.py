@@ -15,6 +15,7 @@ from megatron.core.pipeline_parallel.utils import (
     set_streams,
 )
 from megatron.core.utils import get_attr_wrapped_model
+import megatron.training.comm_straggler as comm_straggler
 
 # Types
 Shape = Union[List[int], torch.Size]
@@ -326,6 +327,7 @@ def combined_forward_backward_step(
         if is_first_microbatch and hasattr(f_model, 'set_is_first_microbatch'):
             f_model.set_is_first_microbatch()
         if current_microbatch is not None:
+            comm_straggler.set_microbatch(current_microbatch)
             set_current_microbatch(f_model, current_microbatch)
         if not isinstance(input_tensor, list):
             input_tensor = [input_tensor]
@@ -349,9 +351,10 @@ def combined_forward_backward_step(
                 "The final unwrapped model must be a GPTModel instance "
                 "since only GPTModel is supported for EP A2A overlapping."
             )
-            f_schedule_plan, loss_func = forward_step_func(
-                data_iterator, unwrapped_model, return_schedule_plan=True
-            )
+            with comm_straggler.module_scope(unwrapped_model.__class__.__name__):
+                f_schedule_plan, loss_func = forward_step_func(
+                    data_iterator, unwrapped_model, return_schedule_plan=True
+                )
             assert isinstance(
                 f_schedule_plan, AbstractSchedulePlan
             ), "first output of forward_step_func must be one instance of AbstractSchedulePlan"

@@ -34,6 +34,7 @@ from megatron.core.utils import (
     nvtx_range_pop,
     nvtx_range_push,
 )
+import megatron.training.comm_straggler as comm_straggler
 
 from .combined_1f1b import (
     combined_1f1b_schedule_for_interleaved_pipelining,
@@ -418,6 +419,7 @@ def forward_step(
     if is_first_microbatch and hasattr(model, 'set_is_first_microbatch'):
         model.set_is_first_microbatch()
     if current_microbatch is not None:
+        comm_straggler.set_microbatch(current_microbatch)
         set_current_microbatch(model, current_microbatch)
 
     unwrap_output_tensor = False
@@ -432,13 +434,15 @@ def forward_step(
         context_manager = torch.autocast("cuda", dtype=config.autocast_dtype)
     else:
         context_manager = contextlib.nullcontext()
-    with context_manager:
-        if checkpoint_activations_microbatch is None:
-            output_tensor, loss_func = forward_step_func(data_iterator, model)
-        else:
-            output_tensor, loss_func = forward_step_func(
-                data_iterator, model, checkpoint_activations_microbatch
-            )
+    model_name = get_attr_wrapped_model(model, "forward", return_model_obj=True).__class__.__name__
+    with comm_straggler.module_scope(model_name):
+        with context_manager:
+            if checkpoint_activations_microbatch is None:
+                output_tensor, loss_func = forward_step_func(data_iterator, model)
+            else:
+                output_tensor, loss_func = forward_step_func(
+                    data_iterator, model, checkpoint_activations_microbatch
+                )
     output_tensor, num_tokens = forward_step_calc_loss(
         model,
         output_tensor,

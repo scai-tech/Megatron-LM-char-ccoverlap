@@ -229,6 +229,7 @@ from megatron.core.num_microbatches_calculator import (
 )
 
 from .async_utils import maybe_finalize_async_save
+from . import comm_straggler
 from .utils import (
     append_to_progress_log,
     calc_params_l2_norm,
@@ -1278,6 +1279,7 @@ def pretrain(
     ft_integration.on_checkpointing_start()
     maybe_finalize_async_save(blocking=True, terminate=True)
     ft_integration.on_checkpointing_end(is_async_finalization=True)
+    comm_straggler.finalize()
 
     one_logger and one_logger.log_metrics(
         {'app_finish_time': one_logger_utils.get_timestamp_in_ms()}
@@ -2985,6 +2987,7 @@ def train(
     # Run training iterations till done.
     buffered_rollouts = None
     while iteration < args.train_iters:
+        comm_straggler.set_iteration(iteration)
         if (args.profile 
             and (len(args.profile_ranks) == 0 or
                  torch.distributed.get_rank() in args.profile_ranks)):
@@ -3068,6 +3071,7 @@ def train(
             )
             args.consumed_train_samples += batch_size
             args.skipped_train_samples += batch_size
+            comm_straggler.mark_iteration_end()
             continue
 
         args.curr_iteration = iteration
@@ -3130,6 +3134,7 @@ def train(
                 train_data_iterator=train_data_iterator,
             )
         if should_exit:
+            comm_straggler.mark_iteration_end()
             break
 
         # Enable forward pre-hooks after first set of forward and backward passes.
@@ -3160,6 +3165,7 @@ def train(
                         cuda_graph_helper.cuda_graph_set_manual_hooks()
 
         iteration += 1
+        comm_straggler.mark_iteration_end()
 
         # If requested, manually register FSDP communication buffers after a short warmup.
         if (
