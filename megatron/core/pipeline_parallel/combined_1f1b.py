@@ -6,6 +6,7 @@ from typing import List, Union
 
 import torch
 
+import megatron.core.comm_straggler as comm_straggler
 from megatron.core.enums import Fp8Recipe
 from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.pipeline_parallel.utils import (
@@ -15,7 +16,6 @@ from megatron.core.pipeline_parallel.utils import (
     set_streams,
 )
 from megatron.core.utils import get_attr_wrapped_model
-import megatron.training.comm_straggler as comm_straggler
 
 # Types
 Shape = Union[List[int], torch.Size]

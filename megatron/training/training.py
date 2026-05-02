@@ -211,6 +211,7 @@ from megatron.core.parallel_state import (
 from megatron.core.inference.symmetric_memory import SymmetricMemoryManager
 from megatron.core.inference.unified_memory import create_unified_mempool
 from megatron.core.resharding.refit import swap_model_weights
+import megatron.core.comm_straggler as comm_straggler
 
 try:
     from torch_memory_saver import torch_memory_saver
@@ -229,7 +230,6 @@ from megatron.core.num_microbatches_calculator import (
 )
 
 from .async_utils import maybe_finalize_async_save
-from . import comm_straggler
 from .utils import (
     append_to_progress_log,
     calc_params_l2_norm,

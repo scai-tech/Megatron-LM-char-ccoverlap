@@ -7,7 +7,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Union
 import torch
 from torch.autograd.variable import Variable
 
-from megatron.core import parallel_state
+from megatron.core import comm_straggler, parallel_state
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
 )
@@ -34,8 +34,6 @@ from megatron.core.utils import (
     nvtx_range_pop,
     nvtx_range_push,
 )
-import megatron.training.comm_straggler as comm_straggler
-
 from .combined_1f1b import (
     combined_1f1b_schedule_for_interleaved_pipelining,
     combined_1f1b_schedule_for_no_pipelining,
