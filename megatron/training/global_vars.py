@@ -9,7 +9,7 @@ import torch
 
 from datetime import timedelta
 
-from megatron.core import Timers
+from megatron.core.timers import Timers
 from megatron.core.config import set_experimental_flag
 from megatron.core.energy_monitor import EnergyMonitor
 from megatron.core.jit import disable_jit_fuser
