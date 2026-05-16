@@ -21,6 +21,17 @@ from megatron.core.utils import get_attr_wrapped_model
 Shape = Union[List[int], torch.Size]
 
 
+def _restore_megatron_fsdp_raw_params_if_needed(model):
+    """Mirror MegatronFSDP.forward() setup when combined scheduling unwraps the model."""
+    current_model = model
+    while current_model is not None:
+        restore_raw_params = getattr(current_model, "_replace_param_with_raw_if_needed", None)
+        if restore_raw_params is not None:
+            restore_raw_params()
+            return
+        current_model = getattr(current_model, "module", None)
+
+
 def combined_1f1b_schedule_for_no_pipelining(
     forward_step_func,
     data_iterator,
@@ -342,6 +353,7 @@ def combined_forward_backward_step(
         # The return value becomes (forward_schedule_plan, loss_function),
         # which is used to be (forward_output_tensor, loss_function).
         with context_manager:  # autocast context
+            _restore_megatron_fsdp_raw_params_if_needed(f_model)
             unwrapped_model = get_attr_wrapped_model(
                 f_model, "build_schedule_plan", return_model_obj=True
             )
