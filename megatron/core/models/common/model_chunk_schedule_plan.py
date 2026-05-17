@@ -441,6 +441,39 @@ class TransformerModelChunkSchedulePlan(AbstractSchedulePlan):
         """Gets the model chunk state."""
         return self._model_chunk_state
 
+    def _get_megatron_fsdp_model(self):
+        model = getattr(self.state, "model", None)
+        if model is None:
+            return None
+
+        fsdp_model = getattr(model, "_megatron_fsdp_model", None)
+        if fsdp_model is not None:
+            return fsdp_model
+
+        for param in model.parameters():
+            fsdp_model = getattr(param, "_megatron_fsdp_model", None)
+            if fsdp_model is not None:
+                return fsdp_model
+        return None
+
+    def manual_root_pre_backward(self):
+        fsdp_model = self._get_megatron_fsdp_model()
+        if fsdp_model is None:
+            return
+
+        pre_backward = getattr(fsdp_model, "manual_root_pre_backward", None)
+        if pre_backward is not None:
+            pre_backward()
+
+    def manual_root_post_backward(self):
+        fsdp_model = self._get_megatron_fsdp_model()
+        if fsdp_model is None:
+            return
+
+        post_backward = getattr(fsdp_model, "manual_root_post_backward", None)
+        if post_backward is not None:
+            post_backward()
+
     def release_state(self):
         """Release reference, this helps avoid memory leak."""
         self._model_chunk_state.model = None
@@ -502,6 +535,8 @@ class TransformerModelChunkSchedulePlan(AbstractSchedulePlan):
             if pre_backward is not None:
                 pre_backward(b_schedule_plan.vp_stage)
                 b_schedule_plan.record_current_stream()
+
+            b_schedule_plan.manual_root_pre_backward()
 
             if b_schedule_plan.post_process is not None:
                 b_grad = b_schedule_plan.post_process.backward(b_grad)
@@ -575,6 +610,7 @@ class TransformerModelChunkSchedulePlan(AbstractSchedulePlan):
         # pre process backward
         if b_schedule_plan is not None:
             b_schedule_plan.pre_process.backward(b_grad)
+            b_schedule_plan.manual_root_post_backward()
 
         if f_schedule_plan:
             f_schedule_plan.wait_current_stream()

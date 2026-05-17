@@ -336,6 +336,9 @@ class MegatronFSDP(torch.nn.Module):
         self._register_fsdp_hooks(self.module)
         self.microbatch_count = 0
 
+        # Avoid nn.Module.__setattr__ here: this is a back-reference to the parent
+        # wrapper, not a child module that should be registered by PyTorch.
+        self.module.__dict__["_megatron_fsdp_model"] = self
         for module in self.module.modules():
             if isinstance(module, tuple(self.fsdp_unit_modules)):
                 # Avoid nn.Module.__setattr__ registering the parent FSDP wrapper as
@@ -594,6 +597,23 @@ class MegatronFSDP(torch.nn.Module):
 
         for sub_module in module.modules():
             sub_module._training_state = TrainingState.IDLE
+        return True
+
+    @torch.compiler.disable
+    def manual_root_pre_backward(self):
+        """Run the root pre-backward lifecycle for manually scheduled model chunks."""
+        pre_backward_func = getattr(self, "_manual_root_pre_backward_func", None)
+        if pre_backward_func is None:
+            return False
+        return pre_backward_func()
+
+    @torch.compiler.disable
+    def manual_root_post_backward(self):
+        """Run the root post-backward lifecycle for manually scheduled model chunks."""
+        post_backward_func = getattr(self, "_manual_root_post_backward_func", None)
+        if post_backward_func is None or not getattr(self, "_root_pre_backward_hook_issued", False):
+            return False
+        post_backward_func()
         return True
 
     def _register_fsdp_hooks(self, root_module):
@@ -913,7 +933,7 @@ class MegatronFSDP(torch.nn.Module):
             # Return original input to the module forward pass.
             return args, kwargs
 
-        def _root_post_backward(*unused):
+        def _run_root_post_backward():
             # Make sure all the gradients are handled.
             ordered_params = sorted(
                 list(self._params_require_handle_grad), key=lambda p: self.param_to_name[p]
@@ -956,6 +976,9 @@ class MegatronFSDP(torch.nn.Module):
             if self.model_auto_sync:
                 self.finish_grad_sync()
 
+        def _root_post_backward(*unused):
+            _run_root_post_backward()
+
         @torch.compiler.disable
         def _pre_backward_param_unshard(module: nn.Module, *unused):
             """
@@ -978,17 +1001,9 @@ class MegatronFSDP(torch.nn.Module):
 
         self._root_pre_backward_hook_issued = False
 
-        def _root_pre_backward(module: nn.Module, *unused):
-            """Marks the module's training state as PRE_BACKWARD before the
-            backprop, this function is registered on the root module.
-
-            This root pre-backward hook informs all modules to skip forward
-            pre-fetching in the pre-forward hooks (for activation recomputation)
-            and skip weight deallocation / resharding in the post-forward hooks
-            during the backward pass, which are instead performed by backward hooks.
-            """
+        def _prepare_root_backward():
             if self._root_pre_backward_hook_issued:
-                return
+                return False
             self._root_pre_backward_hook_issued = True
 
             if self.data_parallel_sharding_strategy == "optim_grads_params":
@@ -1012,9 +1027,27 @@ class MegatronFSDP(torch.nn.Module):
                 self._params_require_handle_grad |= set(param_group.params)
                 for param in param_group.params:
                     param.grad_added_to_main_grad = False
+
+            return True
+
+        def _root_pre_backward(module: nn.Module, *unused):
+            """Marks the module's training state as PRE_BACKWARD before the
+            backprop, this function is registered on the root module.
+
+            This root pre-backward hook informs all modules to skip forward
+            pre-fetching in the pre-forward hooks (for activation recomputation)
+            and skip weight deallocation / resharding in the post-forward hooks
+            during the backward pass, which are instead performed by backward hooks.
+            """
+            if not _prepare_root_backward():
+                return
+
             # Queue the root post-backward hook to reduce leftover gradients after
             # the backward pass.
             torch.autograd.Variable._execution_engine.queue_callback(_root_post_backward)
+
+        self._manual_root_pre_backward_func = _prepare_root_backward
+        self._manual_root_post_backward_func = _run_root_post_backward
 
         @torch.compiler.disable
         def _post_forward(module: nn.Module, input: Any, output: Any):
