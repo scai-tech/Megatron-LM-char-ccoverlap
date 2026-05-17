@@ -187,6 +187,10 @@ class TransformerLayerSchedulePlan:
         )
 
     def _get_megatron_fsdp_model(self):
+        fsdp_model = getattr(self.layer, "_megatron_fsdp_model", None)
+        if fsdp_model is not None:
+            return fsdp_model
+
         for param in self.layer.parameters():
             fsdp_model = getattr(param, "_megatron_fsdp_model", None)
             if fsdp_model is not None:
