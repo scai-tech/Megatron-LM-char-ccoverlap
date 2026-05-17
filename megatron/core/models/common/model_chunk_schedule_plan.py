@@ -186,6 +186,33 @@ class TransformerLayerSchedulePlan:
             else nullcontext()
         )
 
+    def _get_megatron_fsdp_model(self):
+        for param in self.layer.parameters():
+            fsdp_model = getattr(param, "_megatron_fsdp_model", None)
+            if fsdp_model is not None:
+                return fsdp_model
+        return None
+
+    def _run_megatron_fsdp_lifecycle(self, method_name):
+        fsdp_model = self._get_megatron_fsdp_model()
+        if fsdp_model is None:
+            return
+        method = getattr(fsdp_model, method_name, None)
+        if method is not None:
+            method(self.layer)
+
+    def pre_forward(self):
+        self._run_megatron_fsdp_lifecycle("manual_pre_forward_module")
+
+    def post_forward(self):
+        self._run_megatron_fsdp_lifecycle("manual_post_forward_module")
+
+    def pre_backward(self):
+        self._run_megatron_fsdp_lifecycle("manual_pre_backward_module")
+
+    def post_backward(self):
+        self._run_megatron_fsdp_lifecycle("manual_post_backward_module")
+
     @staticmethod
     def run(f_layer, b_layer, f_input=None, b_grad=None, is_last_layer_in_bwd=False):
         """Schedule one-forward-one-backward operations for a single transformer layer.
@@ -211,6 +238,12 @@ class TransformerLayerSchedulePlan:
         Returns:
             Functions or values for next iteration's computation
         """
+
+        if f_layer is not None:
+            f_layer.pre_forward()
+
+        if b_layer is not None:
+            b_layer.pre_backward()
 
         if b_layer is not None:
             b_grad = b_layer.mtp_post_process.backward(b_grad)
@@ -250,6 +283,10 @@ class TransformerLayerSchedulePlan:
         # for overlapping with the p2p comm
         if b_layer is not None and not is_last_layer_in_bwd:
             b_layer.attn.backward_dw()
+            b_layer.post_backward()
+
+        if f_layer is not None:
+            f_layer.post_forward()
 
         return f_input, b_grad
 
@@ -525,6 +562,7 @@ class TransformerModelChunkSchedulePlan(AbstractSchedulePlan):
         if b_num_layers > 0:
             assert b_layer is not None
             b_layer.attn.backward_dw()
+            b_layer.post_backward()
             b_layer.release_state()
 
         # post process forward

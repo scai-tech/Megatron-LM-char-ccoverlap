@@ -503,6 +503,91 @@ class MegatronFSDP(torch.nn.Module):
             # attribute.
             param.overwrite_main_grad = True
 
+    def _is_fsdp_unit_module(self, module: nn.Module):
+        return isinstance(module, tuple(self.fsdp_unit_modules))
+
+    def _release_module_parameters(self, module: nn.Module, bwd: bool, lazy: bool = False):
+        for param in module.parameters():
+            bucket_id = self.param_and_grad_buffer.param_to_param_group[param]
+            self.all_gather_pipeline.release_bucket(bucket_id, bwd, lazy=lazy)
+
+        if not self.ddp_config.keep_fp8_transpose_cache:
+            for param in module.parameters():
+                if is_float8tensor(param):
+                    fp8_discard_transpose_cache(param)
+
+    @torch.compiler.disable
+    def manual_pre_forward_module(self, module: nn.Module):
+        """Run the FSDP pre-forward lifecycle for manually scheduled FSDP units."""
+        if self.data_parallel_sharding_strategy == "no_shard" or not self._is_fsdp_unit_module(
+            module
+        ):
+            return False
+
+        input_training_state = module._training_state
+        if input_training_state != TrainingState.PRE_BACKWARD:
+            module._training_state = TrainingState.FORWARD
+
+        self.all_gather_and_wait_parameters_ready(
+            params=list(module.parameters()),
+            prefetch=False,
+            prefetch_order=PrefetchOrder.FORWARD_PASS_ORDER,
+        )
+        return True
+
+    @torch.compiler.disable
+    def manual_post_forward_module(self, module: nn.Module):
+        """Run the FSDP post-forward lifecycle for manually scheduled FSDP units."""
+        if self.data_parallel_sharding_strategy == "no_shard" or not self._is_fsdp_unit_module(
+            module
+        ):
+            return False
+
+        if module._training_state == TrainingState.PRE_BACKWARD:
+            lazy_release = True
+        else:
+            lazy_release = False
+            module._training_state = TrainingState.IDLE
+
+        self._release_module_parameters(module, bwd=False, lazy=lazy_release)
+        return True
+
+    @torch.compiler.disable
+    def manual_pre_backward_module(self, module: nn.Module):
+        """Run the FSDP pre-backward lifecycle for manually scheduled FSDP units."""
+        if self.data_parallel_sharding_strategy == "no_shard" or not self._is_fsdp_unit_module(
+            module
+        ):
+            return False
+
+        for sub_module in module.modules():
+            sub_module._training_state = TrainingState.PRE_BACKWARD
+
+        self.all_gather_and_wait_parameters_ready(
+            params=list(module.parameters()),
+            prefetch=False,
+            prefetch_order=PrefetchOrder.BACKWARD_PASS_ORDER,
+            bwd=True,
+        )
+        return True
+
+    @torch.compiler.disable
+    def manual_post_backward_module(self, module: nn.Module):
+        """Run the FSDP post-backward lifecycle for manually scheduled FSDP units."""
+        if self.data_parallel_sharding_strategy == "no_shard" or not self._is_fsdp_unit_module(
+            module
+        ):
+            return False
+
+        assert self.data_parallel_sharding_strategy == "optim_grads_params"
+
+        self._release_module_parameters(module, bwd=True)
+        self._release_module_parameters(module, bwd=False)
+
+        for sub_module in module.modules():
+            sub_module._training_state = TrainingState.IDLE
+        return True
+
     def _register_fsdp_hooks(self, root_module):
         """Register necessary hooks for Fully Sharded Data Parallel (FSDP) execution on the model.
 
