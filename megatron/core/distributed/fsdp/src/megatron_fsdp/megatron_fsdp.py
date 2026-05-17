@@ -338,7 +338,9 @@ class MegatronFSDP(torch.nn.Module):
 
         for module in self.module.modules():
             if isinstance(module, tuple(self.fsdp_unit_modules)):
-                setattr(module, "_megatron_fsdp_model", self)
+                # Avoid nn.Module.__setattr__ registering the parent FSDP wrapper as
+                # a child module of the layer, which would create a module cycle.
+                module.__dict__["_megatron_fsdp_model"] = self
 
         # Add a reference from the distributed parameters to self for API
         # accessibility, e.g. when attaching MegatronFSDP scheduled ops
